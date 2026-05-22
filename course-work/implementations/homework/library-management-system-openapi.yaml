@@ -1,0 +1,2018 @@
+openapi: 3.0.3
+
+info:
+  title: Library Management System API
+  description: |
+    ## Описание
+    REST API за управление на библиотека, разработена с ASP.NET Core 8.0 и Entity Framework Core.
+    
+    Системата предоставя пълен набор от услуги за:
+    - **Управление на книги** — добавяне, редактиране, изтриване и търсене на книги
+    - **Управление на потребители** — регистрация и администрация на потребители
+    - **Управление на заемания** — проследяване на заети и върнати книги
+    - **Автентикация и авторизация** — JWT Bearer Token базирана сигурност с роли
+
+    ## Технологичен стак
+    - **Framework:** ASP.NET Core 8.0
+    - **ORM:** Entity Framework Core (SQL Server)
+    - **Автентикация:** JWT Bearer Token
+    - **Хеширане на пароли:** BCrypt-Net-Next
+    - **Документация:** Swashbuckle (Swagger / OpenAPI)
+
+    ## Роли
+    | Роля       | Описание                                       |
+    |------------|------------------------------------------------|
+    | `Admin`    | Пълен достъп до всички ресурси                |
+    | `Librarian`| Управление на книги и заемания                |
+    | `Member`   | Преглед на книги и лични заемания             |
+
+    ## Грешки
+    API-то използва стандартни HTTP статус кодове. При грешка тялото на отговора съдържа обект `ProblemDetails` съгласно RFC 7807.
+
+  version: 1.0.0
+  contact:
+    name: Library Management System Support
+    email: support@library.local
+  license:
+    name: MIT
+
+servers:
+  - url: https://localhost:7001/api
+    description: Локален development сървър (HTTPS)
+  - url: http://localhost:5000/api
+    description: Локален development сървър (HTTP)
+
+tags:
+  - name: Auth
+    description: Автентикация и регистрация на потребители
+  - name: Books
+    description: Управление на книги в библиотечния каталог
+  - name: Users
+    description: Администрация на потребителски акаунти
+  - name: Borrowings
+    description: Управление на заемания на книги
+
+# =============================================================================
+# SECURITY SCHEMES
+# =============================================================================
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT токен, получен от `/api/auth/login`. 
+        Добавете го в header-а: `Authorization: Bearer {token}`
+
+  # ===========================================================================
+  # SCHEMAS
+  # ===========================================================================
+  schemas:
+
+    # --------------------------------------------------------------------------
+    # AUTH SCHEMAS
+    # --------------------------------------------------------------------------
+    RegisterDto:
+      type: object
+      description: Данни за регистрация на нов потребител
+      required:
+        - username
+        - email
+        - password
+        - firstName
+        - lastName
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 50
+          pattern: '^[a-zA-Z0-9_.-]+$'
+          example: ivan.petrov
+          description: Уникално потребителско име (само букви, цифри, точки, долни черти и тирета)
+        email:
+          type: string
+          format: email
+          maxLength: 100
+          example: ivan.petrov@example.com
+          description: Уникален имейл адрес
+        password:
+          type: string
+          format: password
+          minLength: 6
+          maxLength: 100
+          example: SecurePass123!
+          description: Парола (минимум 6 символа)
+        firstName:
+          type: string
+          minLength: 1
+          maxLength: 50
+          example: Иван
+          description: Собствено име
+        lastName:
+          type: string
+          minLength: 1
+          maxLength: 50
+          example: Петров
+          description: Фамилно име
+        role:
+          type: string
+          enum: [Admin, Librarian, Member]
+          default: Member
+          example: Member
+          description: Роля на потребителя. Ако не е подадена, по подразбиране е `Member`.
+
+    LoginDto:
+      type: object
+      description: Данни за вход в системата
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          example: ivan.petrov@example.com
+          description: Имейл адрес на регистриран потребител
+        password:
+          type: string
+          format: password
+          example: SecurePass123!
+          description: Парола на потребителя
+
+    LoginResponseDto:
+      type: object
+      description: Отговор при успешен вход — съдържа JWT токен и информация за потребителя
+      properties:
+        token:
+          type: string
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+          description: JWT Bearer токен за автентикация. Валиден е за конфигурирания период (по подразбиране 24 часа).
+        userId:
+          type: integer
+          format: int32
+          example: 42
+          description: Идентификатор на влезлия потребител
+        username:
+          type: string
+          example: ivan.petrov
+          description: Потребителско име
+        email:
+          type: string
+          format: email
+          example: ivan.petrov@example.com
+          description: Имейл на потребителя
+        role:
+          type: string
+          enum: [Admin, Librarian, Member]
+          example: Member
+          description: Роля на потребителя в системата
+        expiresAt:
+          type: string
+          format: date-time
+          example: '2026-05-23T15:30:00Z'
+          description: Дата и час на изтичане на токена (UTC)
+
+    # --------------------------------------------------------------------------
+    # BOOK SCHEMAS
+    # --------------------------------------------------------------------------
+    BookCreateDto:
+      type: object
+      description: Данни за създаване на нова книга
+      required:
+        - title
+        - author
+        - isbn
+        - totalCopies
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+          example: Под игото
+          description: Заглавие на книгата
+        author:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: Иван Вазов
+          description: Автор на книгата
+        isbn:
+          type: string
+          pattern: '^(?:ISBN(?:-1[03])?:? )?(?=[0-9X]{10}$|(?=(?:[0-9]+[- ]){3})[- 0-9X]{13}$|97[89][0-9]{10}$|(?=(?:[0-9]+[- ]){4})[- 0-9]{17}$)(?:97[89][- ]?)?[0-9]{1,5}[- ]?[0-9]+[- ]?[0-9]+[- ]?[0-9X]$'
+          example: '9789540904042'
+          description: ISBN на книгата (ISBN-10 или ISBN-13). Трябва да е уникален в системата.
+        description:
+          type: string
+          maxLength: 2000
+          nullable: true
+          example: Роман за Априлското въстание от 1876 г.
+          description: Описание / анотация на книгата (незадължително)
+        genre:
+          type: string
+          maxLength: 50
+          nullable: true
+          example: Исторически роман
+          description: Жанр на книгата (незадължително)
+        publishedYear:
+          type: integer
+          format: int32
+          minimum: 1000
+          maximum: 2100
+          nullable: true
+          example: 1894
+          description: Година на публикуване (незадължително). Трябва да е между 1000 и текущата година + 1.
+        publisher:
+          type: string
+          maxLength: 100
+          nullable: true
+          example: Народна просвета
+          description: Издателство (незадължително)
+        totalCopies:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 10000
+          example: 5
+          description: Общ брой налични копия на книгата (минимум 1)
+        coverImageUrl:
+          type: string
+          format: uri
+          maxLength: 500
+          nullable: true
+          example: 'https://example.com/covers/pod-igoto.jpg'
+          description: URL на корицата на книгата (незадължително)
+
+    BookUpdateDto:
+      type: object
+      description: Данни за обновяване на съществуваща книга. Всички полета са незадължителни — подават се само тези, които трябва да се променят.
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+          nullable: true
+          example: Под игото — второ издание
+          description: Ново заглавие (незадължително)
+        author:
+          type: string
+          minLength: 1
+          maxLength: 100
+          nullable: true
+          example: Иван Вазов
+          description: Нов автор (незадължително)
+        isbn:
+          type: string
+          nullable: true
+          example: '9789540904043'
+          description: Нов ISBN (незадължително). Трябва да е уникален.
+        description:
+          type: string
+          maxLength: 2000
+          nullable: true
+          example: Актуализирано описание
+          description: Ново описание (незадължително)
+        genre:
+          type: string
+          maxLength: 50
+          nullable: true
+          example: Класическа литература
+          description: Нов жанр (незадължително)
+        publishedYear:
+          type: integer
+          format: int32
+          minimum: 1000
+          maximum: 2100
+          nullable: true
+          example: 1895
+          description: Нова година на публикуване (незадължително)
+        publisher:
+          type: string
+          maxLength: 100
+          nullable: true
+          example: Просвета
+          description: Ново издателство (незадължително)
+        totalCopies:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 10000
+          nullable: true
+          example: 10
+          description: Нов общ брой копия. Не може да е по-малък от броя на текущо заетите копия.
+        coverImageUrl:
+          type: string
+          format: uri
+          maxLength: 500
+          nullable: true
+          example: 'https://example.com/covers/pod-igoto-v2.jpg'
+          description: Нов URL на корицата (незадължително)
+
+    BookGetDto:
+      type: object
+      description: Пълна информация за книга, върната от API-то
+      properties:
+        id:
+          type: integer
+          format: int32
+          example: 1
+          description: Уникален идентификатор на книгата
+        title:
+          type: string
+          example: Под игото
+          description: Заглавие
+        author:
+          type: string
+          example: Иван Вазов
+          description: Автор
+        isbn:
+          type: string
+          example: '9789540904042'
+          description: ISBN
+        description:
+          type: string
+          nullable: true
+          example: Роман за Априлското въстание
+          description: Описание / анотация
+        genre:
+          type: string
+          nullable: true
+          example: Исторически роман
+          description: Жанр
+        publishedYear:
+          type: integer
+          format: int32
+          nullable: true
+          example: 1894
+          description: Година на публикуване
+        publisher:
+          type: string
+          nullable: true
+          example: Народна просвета
+          description: Издателство
+        totalCopies:
+          type: integer
+          format: int32
+          example: 5
+          description: Общ брой копия
+        availableCopies:
+          type: integer
+          format: int32
+          example: 3
+          description: Налични (незаети) копия към момента на заявката
+        coverImageUrl:
+          type: string
+          format: uri
+          nullable: true
+          example: 'https://example.com/covers/pod-igoto.jpg'
+          description: URL на корицата
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-05-14T14:37:08Z'
+          description: Дата и час на добавяне в системата (UTC)
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+          example: '2026-05-20T10:00:00Z'
+          description: Дата и час на последна промяна (UTC)
+
+    # --------------------------------------------------------------------------
+    # USER SCHEMAS
+    # --------------------------------------------------------------------------
+    UserCreateDto:
+      type: object
+      description: Данни за създаване на потребител от администратор (разлика от регистрацията — ролята е задължителна)
+      required:
+        - username
+        - email
+        - password
+        - firstName
+        - lastName
+        - role
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 50
+          pattern: '^[a-zA-Z0-9_.-]+$'
+          example: maria.stoeva
+          description: Уникално потребителско име
+        email:
+          type: string
+          format: email
+          maxLength: 100
+          example: maria.stoeva@library.bg
+          description: Уникален имейл адрес
+        password:
+          type: string
+          format: password
+          minLength: 6
+          maxLength: 100
+          example: LibraryPass2026!
+          description: Начална парола (ще бъде хеширана с BCrypt)
+        firstName:
+          type: string
+          minLength: 1
+          maxLength: 50
+          example: Мария
+          description: Собствено име
+        lastName:
+          type: string
+          minLength: 1
+          maxLength: 50
+          example: Стоева
+          description: Фамилно име
+        role:
+          type: string
+          enum: [Admin, Librarian, Member]
+          example: Librarian
+          description: Роля на потребителя в системата
+        phoneNumber:
+          type: string
+          maxLength: 20
+          nullable: true
+          example: '+35988123456'
+          description: Телефонен номер (незадължително)
+
+    UserUpdateDto:
+      type: object
+      description: Данни за обновяване на потребител. Всички полета са незадължителни.
+      properties:
+        firstName:
+          type: string
+          minLength: 1
+          maxLength: 50
+          nullable: true
+          example: Мария
+          description: Ново собствено име
+        lastName:
+          type: string
+          minLength: 1
+          maxLength: 50
+          nullable: true
+          example: Иванова
+          description: Ново фамилно име
+        email:
+          type: string
+          format: email
+          maxLength: 100
+          nullable: true
+          example: maria.ivanova@library.bg
+          description: Нов имейл (трябва да е уникален)
+        phoneNumber:
+          type: string
+          maxLength: 20
+          nullable: true
+          example: '+35988999888'
+          description: Нов телефонен номер
+        role:
+          type: string
+          enum: [Admin, Librarian, Member]
+          nullable: true
+          example: Member
+          description: Нова роля (само Admin може да променя роли)
+        isActive:
+          type: boolean
+          nullable: true
+          example: true
+          description: Активен / деактивиран акаунт
+
+    UserGetDto:
+      type: object
+      description: Информация за потребител
+      properties:
+        id:
+          type: integer
+          format: int32
+          example: 42
+          description: Уникален идентификатор
+        username:
+          type: string
+          example: ivan.petrov
+          description: Потребителско име
+        email:
+          type: string
+          format: email
+          example: ivan.petrov@example.com
+          description: Имейл адрес
+        firstName:
+          type: string
+          example: Иван
+          description: Собствено име
+        lastName:
+          type: string
+          example: Петров
+          description: Фамилно име
+        fullName:
+          type: string
+          example: Иван Петров
+          description: Пълно име (firstName + lastName)
+        role:
+          type: string
+          enum: [Admin, Librarian, Member]
+          example: Member
+          description: Роля в системата
+        phoneNumber:
+          type: string
+          nullable: true
+          example: '+35988123456'
+          description: Телефонен номер
+        isActive:
+          type: boolean
+          example: true
+          description: Дали акаунтът е активен
+        activeBorrowingsCount:
+          type: integer
+          format: int32
+          example: 2
+          description: Брой текущо активни заемания
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-01-15T09:00:00Z'
+          description: Дата на регистрация (UTC)
+
+    # --------------------------------------------------------------------------
+    # BORROWING SCHEMAS
+    # --------------------------------------------------------------------------
+    BorrowCreateDto:
+      type: object
+      description: Данни за създаване на ново заемане
+      required:
+        - userId
+        - bookId
+        - dueDate
+      properties:
+        userId:
+          type: integer
+          format: int32
+          example: 42
+          description: ID на потребителя, който заема книгата. Потребителят трябва да е активен.
+        bookId:
+          type: integer
+          format: int32
+          example: 1
+          description: ID на книгата, която се заема. Трябва да има поне едно налично копие.
+        dueDate:
+          type: string
+          format: date
+          example: '2026-06-22'
+          description: Краен срок за връщане (само дата, без час). Трябва да е поне 1 ден след днес и не повече от 90 дни напред.
+        notes:
+          type: string
+          maxLength: 500
+          nullable: true
+          example: Студент — удължен срок
+          description: Бележки към заемането (незадължително)
+
+    BorrowUpdateDto:
+      type: object
+      description: Данни за обновяване на съществуващо заемане (напр. удължаване на срока или отбелязване на връщане)
+      properties:
+        dueDate:
+          type: string
+          format: date
+          nullable: true
+          example: '2026-07-22'
+          description: Нов краен срок. Трябва да е след текущия dueDate. Може да се удължи максимум 2 пъти.
+        returnDate:
+          type: string
+          format: date-time
+          nullable: true
+          example: '2026-06-10T11:30:00Z'
+          description: Дата и час на реално връщане. При подаване се отбелязва заемането като върнато и се увеличава availableCopies.
+        notes:
+          type: string
+          maxLength: 500
+          nullable: true
+          example: Върнато в добро състояние
+          description: Актуализирани бележки
+
+    BorrowGetDto:
+      type: object
+      description: Пълна информация за заемане
+      properties:
+        id:
+          type: integer
+          format: int32
+          example: 101
+          description: Уникален идентификатор на заемането
+        userId:
+          type: integer
+          format: int32
+          example: 42
+          description: ID на потребителя
+        userFullName:
+          type: string
+          example: Иван Петров
+          description: Пълно име на потребителя
+        userEmail:
+          type: string
+          format: email
+          example: ivan.petrov@example.com
+          description: Имейл на потребителя
+        bookId:
+          type: integer
+          format: int32
+          example: 1
+          description: ID на книгата
+        bookTitle:
+          type: string
+          example: Под игото
+          description: Заглавие на книгата
+        bookAuthor:
+          type: string
+          example: Иван Вазов
+          description: Автор на книгата
+        bookIsbn:
+          type: string
+          example: '9789540904042'
+          description: ISBN на книгата
+        borrowDate:
+          type: string
+          format: date-time
+          example: '2026-05-22T10:00:00Z'
+          description: Дата и час на заемане (UTC)
+        dueDate:
+          type: string
+          format: date
+          example: '2026-06-22'
+          description: Краен срок за връщане
+        returnDate:
+          type: string
+          format: date-time
+          nullable: true
+          example: null
+          description: Дата и час на реално връщане (null ако не е върната)
+        status:
+          type: string
+          enum: [Active, Returned, Overdue]
+          example: Active
+          description: |
+            Статус на заемането:
+            - `Active` — книгата е заета, срокът не е изтекъл
+            - `Returned` — книгата е върната
+            - `Overdue` — книгата е заета, но срокът е изтекъл
+        isOverdue:
+          type: boolean
+          example: false
+          description: Дали заемането е просрочено
+        daysOverdue:
+          type: integer
+          format: int32
+          nullable: true
+          example: null
+          description: Брой дни на просрочие (null ако не е просрочено)
+        renewalCount:
+          type: integer
+          format: int32
+          example: 0
+          description: Брой пъти, в които е удължаван срокът (максимум 2)
+        notes:
+          type: string
+          nullable: true
+          example: null
+          description: Бележки към заемането
+
+    # --------------------------------------------------------------------------
+    # QUERY PARAMETERS SCHEMA
+    # --------------------------------------------------------------------------
+    PaginationMeta:
+      type: object
+      description: Мета-информация за пагинация
+      properties:
+        currentPage:
+          type: integer
+          format: int32
+          example: 1
+        totalPages:
+          type: integer
+          format: int32
+          example: 5
+        pageSize:
+          type: integer
+          format: int32
+          example: 10
+        totalCount:
+          type: integer
+          format: int32
+          example: 48
+        hasPrevious:
+          type: boolean
+          example: false
+        hasNext:
+          type: boolean
+          example: true
+
+    # --------------------------------------------------------------------------
+    # ERROR SCHEMAS (RFC 7807 ProblemDetails)
+    # --------------------------------------------------------------------------
+    ProblemDetails:
+      type: object
+      description: Стандартен обект за описание на грешки (RFC 7807)
+      properties:
+        type:
+          type: string
+          format: uri
+          example: 'https://tools.ietf.org/html/rfc7231#section-6.5.1'
+          description: URI, идентифициращ вида на грешката
+        title:
+          type: string
+          example: Bad Request
+          description: Кратко, четимо заглавие на грешката
+        status:
+          type: integer
+          format: int32
+          example: 400
+          description: HTTP статус код
+        detail:
+          type: string
+          example: 'Полето ISBN вече съществува в системата.'
+          description: Детайлно описание на конкретната грешка
+        instance:
+          type: string
+          format: uri
+          example: '/api/books'
+          description: URI на ресурса, при достъп до който е възникнала грешката
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          nullable: true
+          example:
+            isbn: ['ISBN форматът е невалиден.']
+            totalCopies: ['Стойността трябва да е поне 1.']
+          description: Речник с грешки по отделни полета (при валидационни грешки)
+
+# =============================================================================
+# PATHS
+# =============================================================================
+paths:
+
+  # ============================================================================
+  # AUTH ENDPOINTS
+  # ============================================================================
+  /auth/register:
+    post:
+      tags:
+        - Auth
+      summary: Регистрация на нов потребител
+      operationId: registerUser
+      description: |
+        Създава нов потребителски акаунт в системата.
+        
+        **Валидации:**
+        - `username` трябва да е уникален в системата
+        - `email` трябва да е уникален в системата
+        - `password` трябва да е минимум 6 символа
+        - `role` ако не е подадена, се задава `Member` по подразбиране
+        
+        **Действия при успех:**
+        1. Паролата се хешира с BCrypt (work factor 12)
+        2. Потребителят се записва в базата данни
+        3. Връща се JWT токен за незабавна автентикация
+        
+        **Забележка:** Ако искате да създадете потребител с роля `Admin` или `Librarian`, 
+        трябва да сте автентикиран като `Admin` и да използвате `POST /api/users`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterDto'
+            example:
+              username: new.reader
+              email: new.reader@example.com
+              password: MyPassword123!
+              firstName: Георги
+              lastName: Димитров
+      responses:
+        '201':
+          description: Потребителят е регистриран успешно
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponseDto'
+        '400':
+          description: Невалидни входни данни (грешен формат, липсващи задължителни полета)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                title: Bad Request
+                status: 400
+                errors:
+                  email: ['Не е валиден имейл адрес.']
+                  password: ['Паролата трябва да е поне 6 символа.']
+        '409':
+          description: Потребител с това потребителско име или имейл вече съществува
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                title: Conflict
+                status: 409
+                detail: 'Потребител с имейл new.reader@example.com вече съществува.'
+
+  /auth/login:
+    post:
+      tags:
+        - Auth
+      summary: Вход в системата
+      operationId: loginUser
+      description: |
+        Автентикира потребител и връща JWT Bearer Token.
+        
+        **Валидации:**
+        - `email` трябва да принадлежи на съществуващ активен потребител
+        - `password` се верифицира спрямо BCrypt хеша в базата данни
+        
+        **JWT токенът** съдържа следните claims:
+        - `sub` — ID на потребителя
+        - `email` — имейл
+        - `role` — роля
+        - `exp` — дата на изтичане (по подразбиране 24 часа)
+        
+        Токенът трябва да се изпраща в header-а на всяка защитена заявка:
+        ```
+        Authorization: Bearer {token}
+        ```
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginDto'
+            example:
+              email: ivan.petrov@example.com
+              password: SecurePass123!
+      responses:
+        '200':
+          description: Успешен вход — връща JWT токен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponseDto'
+        '400':
+          description: Невалидни входни данни
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: Грешен имейл или парола
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                title: Unauthorized
+                status: 401
+                detail: 'Невалиден имейл или парола.'
+        '403':
+          description: Акаунтът е деактивиран
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                title: Forbidden
+                status: 403
+                detail: 'Акаунтът е деактивиран. Свържете се с библиотекаря.'
+
+  # ============================================================================
+  # BOOKS ENDPOINTS
+  # ============================================================================
+  /books:
+    get:
+      tags:
+        - Books
+      summary: Списък с всички книги
+      operationId: getBooks
+      description: |
+        Връща списък с книги от каталога с поддръжка на пагинация, сортиране и филтриране.
+        
+        **Достъп:** Всички автентикирани потребители.
+        
+        **Филтриране** се извършва чрез query параметри. При комбиниране на няколко филтъра, 
+        резултатът е тяхното пресичане (AND логика).
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          description: Номер на страница (1-базирана индексация)
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            default: 1
+          example: 1
+        - name: pageSize
+          in: query
+          description: Брой резултати на страница
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 10
+          example: 10
+        - name: search
+          in: query
+          description: Търсене по заглавие, автор или ISBN (частично съвпадение, без регистрозависимост)
+          required: false
+          schema:
+            type: string
+            maxLength: 100
+          example: Вазов
+        - name: genre
+          in: query
+          description: Филтриране по жанр (точно съвпадение, без регистрозависимост)
+          required: false
+          schema:
+            type: string
+            maxLength: 50
+          example: Исторически роман
+        - name: author
+          in: query
+          description: Филтриране по автор (частично съвпадение)
+          required: false
+          schema:
+            type: string
+            maxLength: 100
+          example: Вазов
+        - name: availableOnly
+          in: query
+          description: Ако е `true`, връща само книги с наличен поне 1 екземпляр
+          required: false
+          schema:
+            type: boolean
+            default: false
+          example: true
+        - name: sortBy
+          in: query
+          description: Поле за сортиране
+          required: false
+          schema:
+            type: string
+            enum: [title, author, publishedYear, availableCopies, createdAt]
+            default: title
+          example: title
+        - name: sortDirection
+          in: query
+          description: Посока на сортиране
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+          example: asc
+      responses:
+        '200':
+          description: Успешно върнат списък с книги
+          headers:
+            X-Pagination:
+              description: JSON обект с мета-данни за пагинацията
+              schema:
+                type: string
+              example: '{"currentPage":1,"totalPages":5,"pageSize":10,"totalCount":48}'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BookGetDto'
+                  pagination:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '401':
+          description: Не е предоставен валиден JWT токен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+    post:
+      tags:
+        - Books
+      summary: Добавяне на нова книга
+      operationId: createBook
+      description: |
+        Добавя нова книга в библиотечния каталог.
+        
+        **Достъп:** Само `Admin` и `Librarian`.
+        
+        **Валидации:**
+        - `isbn` трябва да е уникален в системата
+        - `totalCopies` трябва да е поне 1
+        - `publishedYear` трябва да е в диапазона [1000, текущата година + 1]
+        - `coverImageUrl` ако е подаден, трябва да е валиден URI
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookCreateDto'
+      responses:
+        '201':
+          description: Книгата е добавена успешно
+          headers:
+            Location:
+              description: URI на новосъздадения ресурс
+              schema:
+                type: string
+              example: /api/books/15
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookGetDto'
+        '400':
+          description: Невалидни входни данни
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: Не е автентикиран
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Недостатъчни права (само Admin и Librarian)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Книга с този ISBN вече съществува
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                title: Conflict
+                status: 409
+                detail: 'Книга с ISBN 9789540904042 вече съществува в каталога.'
+
+  /books/{id}:
+    get:
+      tags:
+        - Books
+      summary: Детайли за конкретна книга
+      operationId: getBookById
+      description: |
+        Връща пълна информация за книга по нейния идентификатор.
+        
+        **Достъп:** Всички автентикирани потребители.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          description: Уникален идентификатор на книгата
+          required: true
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+          example: 1
+      responses:
+        '200':
+          description: Успешно намерена книга
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookGetDto'
+        '401':
+          description: Не е автентикиран
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Книга с посочения ID не е намерена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                title: Not Found
+                status: 404
+                detail: 'Книга с ID 999 не е намерена.'
+
+    put:
+      tags:
+        - Books
+      summary: Пълно обновяване на книга
+      operationId: updateBook
+      description: |
+        Обновява данните на съществуваща книга (пълна замяна на подаваните полета).
+        
+        **Достъп:** Само `Admin` и `Librarian`.
+        
+        **Валидации:**
+        - `totalCopies` (ако е подадено) не може да е по-малко от броя на активно заетите копия.
+        - Ако `isbn` е подаден, трябва да е уникален (различен от другите книги).
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          description: ID на книгата, която се обновява
+          required: true
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+          example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookUpdateDto'
+      responses:
+        '200':
+          description: Книгата е обновена успешно
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookGetDto'
+        '400':
+          description: Невалидни входни данни
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: Не е автентикиран
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Недостатъчни права
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Книгата не е намерена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: ISBN вече се използва от друга книга
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+    delete:
+      tags:
+        - Books
+      summary: Изтриване на книга
+      operationId: deleteBook
+      description: |
+        Изтрива книга от каталога.
+        
+        **Достъп:** Само `Admin`.
+        
+        **Ограничения:** Книга не може да бъде изтрита, ако има активни заемания 
+        (т.е. поне едно заемане със статус `Active` или `Overdue`).
+        В такъв случай трябва първо да се приключат всички активни заемания.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          description: ID на книгата, която се изтрива
+          required: true
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+          example: 1
+      responses:
+        '204':
+          description: Книгата е изтрита успешно (без тяло на отговора)
+        '401':
+          description: Не е автентикиран
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Само Admin може да изтрива книги
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Книгата не е намерена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Книгата има активни заемания и не може да бъде изтрита
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                title: Conflict
+                status: 409
+                detail: 'Книгата не може да бъде изтрита — има 2 активни заемания.'
+
+  # ============================================================================
+  # USERS ENDPOINTS
+  # ============================================================================
+  /users:
+    get:
+      tags:
+        - Users
+      summary: Списък с всички потребители
+      operationId: getUsers
+      description: |
+        Връща списък с потребители с поддръжка на пагинация и филтриране.
+        
+        **Достъп:** Само `Admin`.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            default: 1
+          example: 1
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 10
+          example: 10
+        - name: search
+          in: query
+          description: Търсене по потребителско име, имейл или пълно име
+          required: false
+          schema:
+            type: string
+            maxLength: 100
+          example: Петров
+        - name: role
+          in: query
+          description: Филтриране по роля
+          required: false
+          schema:
+            type: string
+            enum: [Admin, Librarian, Member]
+          example: Member
+        - name: isActive
+          in: query
+          description: Филтриране по статус на акаунта
+          required: false
+          schema:
+            type: boolean
+          example: true
+        - name: sortBy
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [username, email, firstName, lastName, createdAt, role]
+            default: lastName
+          example: lastName
+        - name: sortDirection
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+          example: asc
+      responses:
+        '200':
+          description: Успешно върнат списък с потребители
+          headers:
+            X-Pagination:
+              description: JSON с мета-данни за пагинацията
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/UserGetDto'
+                  pagination:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '401':
+          description: Не е автентикиран
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Само Admin има достъп до списъка с потребители
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+    post:
+      tags:
+        - Users
+      summary: Създаване на потребител от администратор
+      operationId: createUser
+      description: |
+        Създава нов потребителски акаунт с определена роля. 
+        За разлика от `/auth/register`, тук ролята е задължителна и може да е всяка.
+        
+        **Достъп:** Само `Admin`.
+        
+        **Валидации:**
+        - `username` трябва да е уникален
+        - `email` трябва да е уникален
+        - `password` минимум 6 символа
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreateDto'
+      responses:
+        '201':
+          description: Потребителят е създаден успешно
+          headers:
+            Location:
+              schema:
+                type: string
+              example: /api/users/43
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserGetDto'
+        '400':
+          description: Невалидни входни данни
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: Не е автентикиран
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Само Admin може да създава потребители по този маршрут
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Потребителско име или имейл вече съществуват
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  /users/{id}:
+    get:
+      tags:
+        - Users
+      summary: Детайли за конкретен потребител
+      operationId: getUserById
+      description: |
+        Връща пълна информация за потребител по неговия ID.
+        
+        **Достъп:** 
+        - `Admin` — може да вижда всеки потребител
+        - `Librarian` — може да вижда всеки потребител
+        - `Member` — може да вижда само собствения си профил
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          description: ID на потребителя
+          required: true
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+          example: 42
+      responses:
+        '200':
+          description: Успешно намерен потребител
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserGetDto'
+        '401':
+          description: Не е автентикиран
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Достъп отказан (Member опитва да вижда чужд профил)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Потребителят не е намерен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+    put:
+      tags:
+        - Users
+      summary: Обновяване на потребител
+      operationId: updateUser
+      description: |
+        Обновява данните на съществуващ потребител.
+        
+        **Достъп:**
+        - `Admin` — може да обновява всеки потребител, включително ролята
+        - `Member` — може да обновява само собствения си профил, но не може да сменя ролята
+        
+        **Валидации:**
+        - `email` ако е подаден, трябва да е уникален
+        - `role` може да се промени само от `Admin`
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          description: ID на потребителя, който се обновява
+          required: true
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+          example: 42
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdateDto'
+      responses:
+        '200':
+          description: Потребителят е обновен успешно
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserGetDto'
+        '400':
+          description: Невалидни входни данни
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: Не е автентикиран
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Достъп отказан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Потребителят не е намерен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Имейлът вече е зает от друг потребител
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+    delete:
+      tags:
+        - Users
+      summary: Изтриване на потребител
+      operationId: deleteUser
+      description: |
+        Изтрива потребителски акаунт от системата.
+        
+        **Достъп:** Само `Admin`.
+        
+        **Ограничения:** Потребител не може да бъде изтрит, ако има активни заемания.
+        Трябва първо да се приключат всички заемания, след което потребителят може да бъде изтрит.
+        
+        **Забележка:** Admin не може да изтрие собствения си акаунт.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          description: ID на потребителя, който се изтрива
+          required: true
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+          example: 42
+      responses:
+        '204':
+          description: Потребителят е изтрит успешно
+        '401':
+          description: Не е автентикиран
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Само Admin може да изтрива потребители
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Потребителят не е намерен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Потребителят има активни заемания
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                title: Conflict
+                status: 409
+                detail: 'Потребителят не може да бъде изтрит — има 1 активно заемане.'
+
+  # ============================================================================
+  # BORROWINGS ENDPOINTS
+  # ============================================================================
+  /borrowings:
+    get:
+      tags:
+        - Borrowings
+      summary: Списък с всички заемания
+      operationId: getBorrowings
+      description: |
+        Връща списък със заемания с поддръжка на пагинация и филтриране.
+        
+        **Достъп:**
+        - `Admin` и `Librarian` — виждат всички заемания
+        - `Member` — вижда само своите заемания (независимо от подадения `userId`)
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            default: 1
+          example: 1
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 10
+          example: 10
+        - name: userId
+          in: query
+          description: Филтриране по потребител (само за Admin и Librarian)
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+          example: 42
+        - name: bookId
+          in: query
+          description: Филтриране по книга
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+          example: 1
+        - name: status
+          in: query
+          description: Филтриране по статус на заемането
+          required: false
+          schema:
+            type: string
+            enum: [Active, Returned, Overdue]
+          example: Active
+        - name: fromDate
+          in: query
+          description: Филтриране на заемания от тази дата нагоре (borrowDate >= fromDate)
+          required: false
+          schema:
+            type: string
+            format: date
+          example: '2026-01-01'
+        - name: toDate
+          in: query
+          description: Филтриране на заемания до тази дата (borrowDate <= toDate)
+          required: false
+          schema:
+            type: string
+            format: date
+          example: '2026-12-31'
+        - name: overdueOnly
+          in: query
+          description: Ако е `true`, връща само просрочени заемания
+          required: false
+          schema:
+            type: boolean
+            default: false
+          example: false
+        - name: sortBy
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [borrowDate, dueDate, returnDate, status]
+            default: borrowDate
+          example: borrowDate
+        - name: sortDirection
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+          example: desc
+      responses:
+        '200':
+          description: Успешно върнат списък със заемания
+          headers:
+            X-Pagination:
+              description: JSON с мета-данни за пагинацията
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BorrowGetDto'
+                  pagination:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '401':
+          description: Не е автентикиран
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+    post:
+      tags:
+        - Borrowings
+      summary: Създаване на ново заемане
+      operationId: createBorrowing
+      description: |
+        Регистрира ново заемане на книга от потребител.
+        
+        **Достъп:** `Admin` и `Librarian`.
+        
+        **Валидации:**
+        - Книгата (bookId) трябва да съществува и да има поне 1 налично копие (`availableCopies > 0`)
+        - Потребителят (userId) трябва да е активен
+        - `dueDate` трябва да е поне 1 ден след днес и не повече от 90 дни
+        - Потребителят не трябва да е достигнал максималния лимит от активни заемания (по подразбиране 5)
+        - Потребителят не трябва вече да е заел копие от същата книга (ако политиката го забранява)
+        
+        **Действия при успех:**
+        1. Създава запис в таблица `Borrowings` с `borrowDate = UTC.Now`
+        2. Намалява `availableCopies` на книгата с 1
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BorrowCreateDto'
+      responses:
+        '201':
+          description: Заемането е създадено успешно
+          headers:
+            Location:
+              schema:
+                type: string
+              example: /api/borrowings/101
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BorrowGetDto'
+        '400':
+          description: Невалидни входни данни
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                title: Bad Request
+                status: 400
+                errors:
+                  dueDate: ['Крайният срок трябва да е в бъдещето.']
+        '401':
+          description: Не е автентикиран
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Само Admin и Librarian могат да създават заемания
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Книга или потребител с посочения ID не е намерен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: Бизнес логика не е изпълнена (книгата няма налични копия, потребителят е достигнал лимита и т.н.)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              examples:
+                noAvailableCopies:
+                  summary: Няма налични копия
+                  value:
+                    title: Unprocessable Entity
+                    status: 422
+                    detail: 'Книга "Под игото" няма налични копия за заемане.'
+                limitReached:
+                  summary: Достигнат лимит
+                  value:
+                    title: Unprocessable Entity
+                    status: 422
+                    detail: 'Потребителят е достигнал максималния брой от 5 активни заемания.'
+
+  /borrowings/{id}:
+    get:
+      tags:
+        - Borrowings
+      summary: Детайли за конкретно заемане
+      operationId: getBorrowingById
+      description: |
+        Връща пълна информация за заемане по неговия ID.
+        
+        **Достъп:**
+        - `Admin` и `Librarian` — могат да видят всяко заемане
+        - `Member` — може да вижда само собствените си заемания
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          description: ID на заемането
+          required: true
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+          example: 101
+      responses:
+        '200':
+          description: Успешно намерено заемане
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BorrowGetDto'
+        '401':
+          description: Не е автентикиран
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Достъп отказан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Заемането не е намерено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+    put:
+      tags:
+        - Borrowings
+      summary: Обновяване на заемане (удължаване / отбелязване на връщане)
+      operationId: updateBorrowing
+      description: |
+        Обновява данни на заемане — използва се за удължаване на срока или регистриране на връщане.
+        
+        **Достъп:** `Admin` и `Librarian`.
+        
+        **Сценарий 1 — Удължаване на срок:**
+        - Подайте нов `dueDate` (трябва да е след текущия)
+        - Заемането може да бъде удължено максимум 2 пъти (`renewalCount < 2`)
+        - Вече върнато заемане не може да се удължава
+        
+        **Сценарий 2 — Регистриране на връщане:**
+        - Подайте `returnDate` с дата и час на реалното връщане
+        - Статусът се сменя на `Returned`
+        - `availableCopies` на книгата се увеличава с 1
+        - Вече върнато заемане не може да се отбележи отново
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          description: ID на заемането, което се обновява
+          required: true
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+          example: 101
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BorrowUpdateDto'
+            examples:
+              renewal:
+                summary: Удължаване на срок
+                value:
+                  dueDate: '2026-07-22'
+                  notes: Удължено по молба на студента
+              return:
+                summary: Отбелязване на връщане
+                value:
+                  returnDate: '2026-06-10T11:30:00Z'
+                  notes: Върнато в добро състояние
+      responses:
+        '200':
+          description: Заемането е обновено успешно
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BorrowGetDto'
+        '400':
+          description: Невалидни входни данни
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: Не е автентикиран
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Само Admin и Librarian могат да обновяват заемания
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Заемането не е намерено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: Бизнес логика не е изпълнена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              examples:
+                alreadyReturned:
+                  summary: Вече е върнато
+                  value:
+                    title: Unprocessable Entity
+                    status: 422
+                    detail: 'Заемането вече е отбелязано като върнато.'
+                maxRenewalsReached:
+                  summary: Максимален брой удължавания
+                  value:
+                    title: Unprocessable Entity
+                    status: 422
+                    detail: 'Заемането е достигнало максималния брой удължавания (2).'
+
+    delete:
+      tags:
+        - Borrowings
+      summary: Изтриване на заемане
+      operationId: deleteBorrowing
+      description: |
+        Изтрива запис за заемане.
+        
+        **Достъп:** Само `Admin`.
+        
+        **Ограничения:** Само вече върнати заемания (статус `Returned`) могат да се изтриват.
+        Активни и просрочени заемания не могат да се изтриват — трябва първо да се приключат.
+        
+        **Предупреждение:** Изтриването е необратимо. Препоръчително е да използвате тази операция
+        само за почистване на исторически данни.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          description: ID на заемането, което се изтрива
+          required: true
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+          example: 101
+      responses:
+        '204':
+          description: Заемането е изтрито успешно
+        '401':
+          description: Не е автентикиран
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Само Admin може да изтрива заемания
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: Заемането не е намерено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Заемането е активно или просрочено и не може да се изтрие
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                title: Conflict
+                status: 409
+                detail: 'Само върнати заемания могат да бъдат изтривани. Заемането е в статус "Active".'
+
+# Global security — всички endpoints изискват JWT освен ако не е посочено друго
+security:
+  - BearerAuth: []
